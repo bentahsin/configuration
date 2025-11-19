@@ -1,14 +1,15 @@
-name: Publish to GitHub Packages
+name: Auto Publish Release & Package
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -23,13 +24,22 @@ jobs:
           server-id: github
           settings-path: ${{ github.workspace }}
 
-      - name: Publish Package
+      - name: Sync pom.xml version with Tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Tag version detected: $VERSION"
+          mvn versions:set -DnewVersion=$VERSION -DgenerateBackupPoms=false
+
+      - name: Build and Deploy to GitHub Packages
         run: mvn deploy -s $GITHUB_WORKSPACE/settings.xml -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload JAR to Release Assets
+      - name: Create GitHub Release & Upload JAR
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: target/*.jar
+          generate_release_notes: true
+          draft: false
+          prerelease: false
