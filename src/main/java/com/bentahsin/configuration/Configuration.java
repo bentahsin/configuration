@@ -92,8 +92,8 @@ public class Configuration {
      */
     private void createFile(File file, String fileName) {
         try {
-            if (!plugin.getDataFolder().exists()) {
-                boolean ignored = plugin.getDataFolder().mkdirs();
+            if (file.getParentFile() != null && !file.getParentFile().exists()) {
+                boolean ignored = file.getParentFile().mkdirs();
             }
 
             if (plugin.getResource(fileName) != null) {

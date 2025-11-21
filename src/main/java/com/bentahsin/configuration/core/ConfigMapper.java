@@ -210,52 +210,95 @@ public class ConfigMapper {
         config.set(path, mapList);
     }
 
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private void handleMapLoad(Object instance, Field field, ConfigurationSection config, String path) throws Exception {
         if (!config.isConfigurationSection(path)) return;
 
         ConfigurationSection section = config.getConfigurationSection(path);
-        Map<String, Object> map = new HashMap<>();
+        Map<Object, Object> map = new HashMap<>();
 
+        Class<?> keyType = getMapKeyType(field);
         Class<?> valueType = getMapValueType(field);
 
-        for (String key : Objects.requireNonNull(section).getKeys(false)) {
-            if (isComplexObject(valueType)) {
-                Object valueInstance = valueType.getDeclaredConstructor().newInstance();
-                ConfigurationSection valueSection = section.getConfigurationSection(key);
+        for (String rawKey : Objects.requireNonNull(section).getKeys(false)) {
 
+            Object convertedKey = convertKey(rawKey, keyType);
+            if (convertedKey == null) continue;
+
+            Object value;
+            if (isComplexObject(valueType)) {
+                Object valueInstance = createInstance(valueType);
+                ConfigurationSection valueSection = section.getConfigurationSection(rawKey);
                 if (valueSection != null) {
                     processClass(valueInstance, valueSection);
-                    map.put(key, valueInstance);
+                    value = valueInstance;
+                } else {
+                    continue;
                 }
-                continue;
-            }
-
-            Object rawValue = section.get(key);
-
-            if (valueType.isEnum() && rawValue instanceof String) {
-                try {
-                    @SuppressWarnings({"unchecked", "rawtypes"})
-                    Object enumVal = Enum.valueOf((Class<Enum>) valueType, ((String) rawValue).toUpperCase(Locale.ENGLISH));
-                    map.put(key, enumVal);
-                } catch (Exception e) {
-                    logger.warning("Map Enum hatası (" + key + "): " + rawValue);
+            } else {
+                Object rawValue = section.get(rawKey);
+                if (valueType.isEnum() && rawValue instanceof String) {
+                    try {
+                        value = Enum.valueOf((Class<Enum>) valueType, ((String) rawValue).toUpperCase(Locale.ENGLISH));
+                    } catch (Exception e) { continue; }
+                } else if (rawValue instanceof Number) {
+                    Number num = (Number) rawValue;
+                    if (valueType == int.class || valueType == Integer.class) value = num.intValue();
+                    else if (valueType == long.class || valueType == Long.class) value = num.longValue();
+                    else if (valueType == double.class || valueType == Double.class) value = num.doubleValue();
+                    else value = rawValue;
+                } else {
+                    value = rawValue;
                 }
-                continue;
             }
-
-            if (rawValue instanceof Number) {
-                Number num = (Number) rawValue;
-                if (valueType == int.class || valueType == Integer.class) map.put(key, num.intValue());
-                else if (valueType == long.class || valueType == Long.class) map.put(key, num.longValue());
-                else if (valueType == double.class || valueType == Double.class) map.put(key, num.doubleValue());
-                else map.put(key, rawValue);
-                continue;
-            }
-
-            map.put(key, rawValue);
+            map.put(convertedKey, value);
         }
 
         field.set(instance, map);
+    }
+
+    private Class<?> getMapKeyType(Field field) {
+        Type genericType = field.getGenericType();
+        if (genericType instanceof ParameterizedType) {
+            ParameterizedType pt = (ParameterizedType) genericType;
+            Type[] args = pt.getActualTypeArguments();
+            if (args.length > 0) {
+                Type keyType = args[0];
+                if (keyType instanceof Class) return (Class<?>) keyType;
+            }
+        }
+        return String.class;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Object convertKey(String key, Class<?> targetType) {
+        try {
+            if (targetType == String.class) return key;
+            if (targetType.isEnum()) {
+                return Enum.valueOf((Class<Enum>) targetType, key.toUpperCase(Locale.ENGLISH));
+            }
+            if (targetType == Integer.class || targetType == int.class) return Integer.parseInt(key);
+            if (targetType == Long.class || targetType == long.class) return Long.parseLong(key);
+            if (targetType == Double.class || targetType == double.class) return Double.parseDouble(key);
+            if (targetType == UUID.class) return UUID.fromString(key);
+        } catch (Exception e) {
+            logger.warning("Map Key dönüştürülemedi: " + key + " -> " + targetType.getSimpleName());
+        }
+        return null;
+    }
+
+    private Object createInstance(Class<?> clazz) throws Exception {
+        try {
+            Constructor<?> constructor = clazz.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (NoSuchMethodException e) {
+            if (clazz.getEnclosingClass() != null && !Modifier.isStatic(clazz.getModifiers())) {
+                throw new IllegalStateException("HATA: '" + clazz.getSimpleName() + "' sınıfı bir Inner Class ve STATIC değil! " +
+                        "Lütfen config sınıflarını 'public static class' olarak tanımlayın.");
+            }
+            throw e;
+        }
     }
 
     private void handleMapSave(Field field, ConfigurationSection config, String path, Map<?, ?> map) {
