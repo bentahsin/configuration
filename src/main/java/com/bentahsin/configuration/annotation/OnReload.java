@@ -6,8 +6,8 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Config reload edildiğinde çalıştırılacak metodları işaretler.
- * Örn: Veritabanı bağlantısını yenilemek veya cache temizlemek için.
+ * Marks methods to be executed when the config is reloaded.
+ * Example: To refresh database connections or clear caches.
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
