@@ -6,9 +6,9 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Config dosyasının versiyonunu belirler.
- * Eğer dosyadaki "config-version" değeri bu değerden düşükse,
- * kütüphane eksik ayarları dosyaya ekler ve versiyonu günceller.
+ * Specifies the version of the config file.
+ * If the "config-version" value in the file is lower than this value,
+ * the library adds missing settings to the file and updates the version.
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
