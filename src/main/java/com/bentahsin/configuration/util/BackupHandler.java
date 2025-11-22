@@ -10,6 +10,11 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.logging.Level;
 
+/**
+ * Utility class for creating timestamped backups of configuration files.
+ * <p>
+ * Usage: Call {@link #createBackup(JavaPlugin, File, String, String)} to create a backup of a configuration file.
+ */
 public class BackupHandler {
 
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
