@@ -9,25 +9,25 @@ import java.lang.annotation.Target;
 @Target(ElementType.TYPE)
 public @interface Backup {
     /**
-     * Yedekleme sistemini açıp kapatır.
+     * Enables or disables the backup system.
      */
     boolean enabled() default true;
 
     /**
-     * Yedeklerin saklanacağı klasör yolu.
-     * Eklenti klasörü içindeki konumu belirtir.
+     * The folder path where backups will be stored.
+     * Specifies the location inside the plugin folder.
      */
     String path() default "backups";
 
     /**
-     * Config yüklenirken YAML hatası (Syntax Error) alınırsa
-     * bozuk dosyanın yedeği alınsın mı?
+     * If a YAML error (syntax error) occurs while loading the config,
+     * should a backup of the corrupted file be taken?
      */
     boolean onFailure() default true;
 
     /**
-     * Config versiyonu değiştiğinde (Migration)
-     * eski config dosyasının yedeği alınsın mı?
+     * When the config version changes (migration),
+     * should a backup of the old config file be taken?
      */
     boolean onMigration() default true;
 }
