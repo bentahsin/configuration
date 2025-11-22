@@ -81,7 +81,7 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
             return item;
 
         } catch (Exception e) {
-            Bukkit.getLogger().log(Level.WARNING, "[Configuration] ItemStack dönüştürülürken hata oluştu!", e);
+            Bukkit.getLogger().log(Level.WARNING, "[Configuration] Encountered an error while transforming ItemStack!", e);
             return new ItemStack(Material.AIR);
         }
     }
