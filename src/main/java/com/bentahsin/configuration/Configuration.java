@@ -1,6 +1,9 @@
 package com.bentahsin.configuration;
 
+import com.bentahsin.configuration.annotation.Backup;
+import com.bentahsin.configuration.annotation.ConfigVersion;
 import com.bentahsin.configuration.core.ConfigMapper;
+import com.bentahsin.configuration.util.BackupHandler;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -22,11 +25,11 @@ public class Configuration {
     }
 
     /**
-     * Config dosyasını başlatır, yükler ve eksik ayarları tamamlar.
-     * Bu metod aynı zamanda "Reload" işlemi için de kullanılabilir.
+     * Initializes, loads, and completes missing settings for the config file.
+     * This method can also be used for the "Reload" operation (logic-wise).
      *
-     * @param configInstance Config sınıfının örneği (örn: new AntiAfkConfig())
-     * @param fileName       Dosya adı (örn: "config.yml")
+     * @param configInstance The instance of the config class (e.g., new AntiAfkConfig())
+     * @param fileName       The file name (e.g., "config.yml")
      */
     public void init(Object configInstance, String fileName) {
         File file = new File(plugin.getDataFolder(), fileName);
@@ -36,34 +39,61 @@ public class Configuration {
         }
 
         YamlConfiguration yamlConfig = new YamlConfiguration();
+        boolean loadFailed = false;
+
         try {
             yamlConfig.load(file);
-        } catch (IOException | InvalidConfigurationException e) {
-            plugin.getLogger().log(Level.SEVERE, "Config dosyası okunamadı veya bozuk: " + fileName, e);
+        } catch (InvalidConfigurationException e) {
+            plugin.getLogger().severe("!!! Critical Error !!!");
+            plugin.getLogger().severe(fileName + " is broken! Please check the YAML format.");
+
+            handleBackupOnFailure(configInstance, file);
+            loadFailed = true;
+        } catch (IOException e) {
+            plugin.getLogger().log(Level.SEVERE, "Config file could not be read or is corrupt: " + fileName, e);
             return;
         }
 
-        mapper.loadFromConfig(configInstance, yamlConfig);
+        if (!loadFailed) {
+            handleBackupOnMigration(configInstance, yamlConfig, file);
+        }
+
+        if (!loadFailed) {
+            mapper.loadFromConfig(configInstance, yamlConfig);
+        }
+
+        if (!loadFailed) {
+            mapper.handleVersion(configInstance, yamlConfig);
+        } else if (configInstance.getClass().isAnnotationPresent(ConfigVersion.class)) {
+            int v = configInstance.getClass().getAnnotation(ConfigVersion.class).value();
+            yamlConfig.set("config-version", v);
+        }
+
         mapper.saveToConfig(configInstance, yamlConfig);
 
         try {
             yamlConfig.save(file);
+            if (loadFailed) {
+                plugin.getLogger().warning("Broken file has been backed up and " + fileName + " has been recreated with default settings.");
+            }
         } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE, "Config güncellenirken hata oluştu: " + fileName, e);
+            plugin.getLogger().log(Level.SEVERE, "Error occurred while updating config: " + fileName, e);
         }
     }
 
     /**
-     * Yapılandırmayı sadece yeniden yükler (init ile aynı işlevi görür, okunabilirlik için).
+     * Reloads the configuration.
+     * Essentially calls init() but also triggers @OnReload methods.
      */
     @SuppressWarnings("unused")
     public void reload(Object configInstance, String fileName) {
         init(configInstance, fileName);
+        mapper.runOnReload(configInstance);
     }
 
     /**
-     * Mevcut nesne durumunu dosyaya kaydeder.
-     * Oyun içi komutla ayar değiştirdiğinde bunu çağırabilirsin.
+     * Saves the current object state to the file.
+     * Can be called when changing settings via in-game commands.
      */
     @SuppressWarnings("unused")
     public void save(Object configInstance, String fileName) {
@@ -75,7 +105,7 @@ public class Configuration {
                 yamlConfig.load(file);
             }
         } catch (Exception e) {
-            plugin.getLogger().warning("Mevcut config yüklenemedi, üzerine yazılıyor: " + fileName);
+            plugin.getLogger().warning("Could not load existing config, overwriting: " + fileName);
         }
 
         mapper.saveToConfig(configInstance, yamlConfig);
@@ -83,12 +113,12 @@ public class Configuration {
         try {
             yamlConfig.save(file);
         } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE, "Config kaydedilemedi: " + fileName, e);
+            plugin.getLogger().log(Level.SEVERE, "Could not save config: " + fileName, e);
         }
     }
 
     /**
-     * Dosya oluşturma mantığı (Private Helper)
+     * Internal helper logic for file creation.
      */
     private void createFile(File file, String fileName) {
         try {
@@ -100,11 +130,44 @@ public class Configuration {
                 plugin.saveResource(fileName, false);
             } else {
                 if (file.createNewFile()) {
-                    plugin.getLogger().info("Yeni config dosyası oluşturuldu: " + fileName);
+                    plugin.getLogger().info("New config file created: " + fileName);
                 }
             }
         } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE, "Config dosyası oluşturulamadı: " + fileName, e);
+            plugin.getLogger().log(Level.SEVERE, "Could not create config file: " + fileName, e);
+        }
+    }
+
+    /**
+     * Helper: Checks and handles backup on failure (Syntax Error).
+     */
+    private void handleBackupOnFailure(Object instance, File file) {
+        if (instance.getClass().isAnnotationPresent(Backup.class)) {
+            Backup backup = instance.getClass().getAnnotation(Backup.class);
+            if (backup.enabled() && backup.onFailure()) {
+                plugin.getLogger().info("Backing up broken file...");
+                BackupHandler.createBackup(plugin, file, backup.path(), "broken");
+            }
+        }
+    }
+
+    /**
+     * Helper: Checks and handles backup on version migration.
+     */
+    private void handleBackupOnMigration(Object instance, YamlConfiguration config, File file) {
+        if (instance.getClass().isAnnotationPresent(Backup.class) &&
+                instance.getClass().isAnnotationPresent(ConfigVersion.class)) {
+
+            Backup backup = instance.getClass().getAnnotation(Backup.class);
+            ConfigVersion versionAnno = instance.getClass().getAnnotation(ConfigVersion.class);
+
+            int fileVersion = config.getInt("config-version", 0);
+            int classVersion = versionAnno.value();
+
+            if (fileVersion < classVersion && backup.enabled() && backup.onMigration()) {
+                plugin.getLogger().info("Upgrading version (" + fileVersion + " -> " + classVersion + "). Backing up...");
+                BackupHandler.createBackup(plugin, file, backup.path(), "v" + fileVersion);
+            }
         }
     }
 }

@@ -18,6 +18,35 @@ public class ConfigMapper {
         this.logger = logger;
     }
 
+    public void handleVersion(Object instance, ConfigurationSection config) {
+        if (!instance.getClass().isAnnotationPresent(ConfigVersion.class)) return;
+
+        int classVersion = instance.getClass().getAnnotation(ConfigVersion.class).value();
+        int fileVersion = config.getInt("config-version", 0);
+
+        if (fileVersion < classVersion) {
+            logger.info("Updating config version: v" + fileVersion + " -> v" + classVersion);
+            config.set("config-version", classVersion);
+        }
+    }
+
+    public void runOnReload(Object instance) {
+        for (Method method : instance.getClass().getDeclaredMethods()) {
+            if (method.isAnnotationPresent(OnReload.class)) {
+                if (!trySetAccessible(method)) continue;
+
+                try {
+                    method.setAccessible(true);
+                    logger.info("Running reload trigger: " + method.getName());
+                    method.invoke(instance);
+                } catch (Exception e) {
+                    logger.severe("Error running OnReload method: " + method.getName());
+                    logger.severe(e.getMessage());
+                }
+            }
+        }
+    }
+
     public void loadFromConfig(Object instance, ConfigurationSection config) {
         if (instance == null || config == null) return;
         processClass(instance, config);
@@ -38,7 +67,7 @@ public class ConfigMapper {
             String pathKey = getPathKey(field);
 
             try {
-                field.setAccessible(true);
+                if (!trySetAccessible(field)) continue;
 
                 if (field.isAnnotationPresent(Transform.class)) {
                     Object val = config.get(pathKey);
@@ -61,8 +90,13 @@ public class ConfigMapper {
                 if (isComplexObject(field.getType())) {
                     Object fieldInstance = field.get(instance);
                     if (fieldInstance == null) {
-                        fieldInstance = field.getType().getDeclaredConstructor().newInstance();
-                        field.set(instance, fieldInstance);
+                        Constructor<?> constructor = field.getType().getDeclaredConstructor();
+                        if (trySetAccessible(constructor)) {
+                            fieldInstance = constructor.newInstance();
+                            field.set(instance, fieldInstance);
+                        } else {
+                            continue;
+                        }
                     }
 
                     ConfigurationSection subSection = config.getConfigurationSection(pathKey);
@@ -82,7 +116,7 @@ public class ConfigMapper {
                 }
 
             } catch (Exception e) {
-                logger.warning("Config yüklenirken hata (" + field.getName() + "): " + e.getMessage());
+                logger.warning("Error loading config (" + field.getName() + "): " + e.getMessage());
             }
         }
     }
@@ -105,7 +139,7 @@ public class ConfigMapper {
             String path = getPathKey(field);
 
             try {
-                field.setAccessible(true);
+                if (!trySetAccessible(field)) continue;
                 Object value = field.get(instance);
 
                 if (value == null) continue;
@@ -144,7 +178,7 @@ public class ConfigMapper {
                 config.set(path, value);
 
             } catch (Exception e) {
-                logger.severe("Kaydetme hatası: " + e.getMessage());
+                logger.severe("Save error: " + e.getMessage());
             }
         }
     }
@@ -200,7 +234,7 @@ public class ConfigMapper {
             Map<String, Object> objectMap = new LinkedHashMap<>();
             for (Field objField : obj.getClass().getDeclaredFields()) {
                 if (!shouldProcess(objField)) continue;
-                objField.setAccessible(true);
+                if (!trySetAccessible(objField)) continue;
                 String objPath = getPathKey(objField);
                 objectMap.put(objPath, objField.get(obj));
             }
@@ -282,7 +316,7 @@ public class ConfigMapper {
             if (targetType == Double.class || targetType == double.class) return Double.parseDouble(key);
             if (targetType == UUID.class) return UUID.fromString(key);
         } catch (Exception e) {
-            logger.warning("Map Key dönüştürülemedi: " + key + " -> " + targetType.getSimpleName());
+            logger.warning("Map Key conversion failed: " + key + " -> " + targetType.getSimpleName());
         }
         return null;
     }
@@ -290,12 +324,12 @@ public class ConfigMapper {
     private Object createInstance(Class<?> clazz) throws Exception {
         try {
             Constructor<?> constructor = clazz.getDeclaredConstructor();
-            constructor.setAccessible(true);
+            trySetAccessible(constructor);
             return constructor.newInstance();
         } catch (NoSuchMethodException e) {
             if (clazz.getEnclosingClass() != null && !Modifier.isStatic(clazz.getModifiers())) {
-                throw new IllegalStateException("HATA: '" + clazz.getSimpleName() + "' sınıfı bir Inner Class ve STATIC değil! " +
-                        "Lütfen config sınıflarını 'public static class' olarak tanımlayın.");
+                throw new IllegalStateException("ERROR: '" + clazz.getSimpleName() + "' is an Inner Class and NOT STATIC! " +
+                        "Please define config classes as 'public static class'.");
             }
             throw e;
         }
@@ -393,7 +427,7 @@ public class ConfigMapper {
 
             if (value == null) {
                 if (validate.notNull()) {
-                    logger.warning("Config Hatası: " + field.getName() + " null olamaz!");
+                    logger.warning("Config Error: " + field.getName() + " cannot be null!");
                 }
                 return;
             }
@@ -401,7 +435,7 @@ public class ConfigMapper {
             if (value instanceof Number) {
                 double val = ((Number) value).doubleValue();
                 if (val < validate.min() || val > validate.max()) {
-                    logger.warning(String.format("Config Sınır Hatası (%s): %s (Min:%s Max:%s)", field.getName(), val, validate.min(), validate.max()));
+                    logger.warning(String.format("Config Limit Error (%s): %s (Min:%s Max:%s)", field.getName(), val, validate.min(), validate.max()));
                     return;
                 }
             }
@@ -409,8 +443,8 @@ public class ConfigMapper {
             if (value instanceof String && !validate.pattern().isEmpty()) {
                 String strVal = (String) value;
                 if (!strVal.matches(validate.pattern())) {
-                    logger.warning("Config Format Hatası (" + field.getName() + "): Değer '" + strVal + "' formata uymuyor.");
-                    logger.warning("Beklenen Regex: " + validate.pattern());
+                    logger.warning("Config Format Error (" + field.getName() + "): Value '" + strVal + "' does not match format.");
+                    logger.warning("Expected Regex: " + validate.pattern());
                     return;
                 }
             }
@@ -425,7 +459,7 @@ public class ConfigMapper {
                     Enum<?> enumValue = Enum.valueOf((Class<Enum>) type, ((String) value).toUpperCase(Locale.ENGLISH));
                     field.set(instance, enumValue);
                 } catch (IllegalArgumentException e) {
-                    logger.warning("Enum Hatası: '" + field.getName() + "' geçersiz: " + value);
+                    logger.warning("Enum Error: '" + field.getName() + "' invalid: " + value);
                 }
             }
             return;
@@ -451,7 +485,7 @@ public class ConfigMapper {
         if (type.isAssignableFrom(value.getClass())) {
             field.set(instance, value);
         } else {
-            logger.warning("Tip Uyuşmazlığı: '" + field.getName() + "' Beklenen: " + type.getSimpleName() + ", Gelen: " + value.getClass().getSimpleName());
+            logger.warning("Type Mismatch: '" + field.getName() + "' Expected: " + type.getSimpleName() + ", Got: " + value.getClass().getSimpleName());
         }
     }
 
@@ -472,8 +506,9 @@ public class ConfigMapper {
     private void setComments(ConfigurationSection config, String path, List<String> comments) {
         try {
             Method method = config.getClass().getMethod("setComments", String.class, List.class);
-            method.setAccessible(true);
-            method.invoke(config, path, comments);
+            if (trySetAccessible(method)) {
+                method.invoke(config, path, comments);
+            }
         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ignored) {}
     }
 
@@ -481,13 +516,29 @@ public class ConfigMapper {
         for (Method method : instance.getClass().getDeclaredMethods()) {
             if (method.isAnnotationPresent(PostLoad.class)) {
                 try {
-                    method.setAccessible(true);
+                    if (!trySetAccessible(method)) continue;
                     method.invoke(instance);
                 } catch (Exception e) {
                     logger.warning("PostLoad metodu çalışırken hata: " + method.getName());
                     logger.severe(e.getMessage());
                 }
             }
+        }
+    }
+
+    /**
+     * AccessibleObject (Field, Method, Constructor) üzerinde setAccessible(true) yapmayı dener.
+     *
+     * @param object Erişilmek istenen Field, Method veya Constructor.
+     * @return Erişim başarılıysa true, SecurityException alınırsa false.
+     */
+    private boolean trySetAccessible(AccessibleObject object) {
+        try {
+            object.setAccessible(true);
+            return true;
+        } catch (Exception e) {
+            logger.severe("Cannot access member " + object.toString() + " due to security restrictions: " + e.getMessage());
+            return false;
         }
     }
 }
