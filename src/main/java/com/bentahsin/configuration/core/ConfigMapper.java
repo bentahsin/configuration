@@ -33,6 +33,8 @@ public class ConfigMapper {
     public void runOnReload(Object instance) {
         for (Method method : instance.getClass().getDeclaredMethods()) {
             if (method.isAnnotationPresent(OnReload.class)) {
+                if (!trySetAccessible(method)) continue;
+
                 try {
                     method.setAccessible(true);
                     logger.info("Running reload trigger: " + method.getName());
@@ -65,7 +67,7 @@ public class ConfigMapper {
             String pathKey = getPathKey(field);
 
             try {
-                field.setAccessible(true);
+                if (!trySetAccessible(field)) continue;
 
                 if (field.isAnnotationPresent(Transform.class)) {
                     Object val = config.get(pathKey);
@@ -88,8 +90,13 @@ public class ConfigMapper {
                 if (isComplexObject(field.getType())) {
                     Object fieldInstance = field.get(instance);
                     if (fieldInstance == null) {
-                        fieldInstance = field.getType().getDeclaredConstructor().newInstance();
-                        field.set(instance, fieldInstance);
+                        Constructor<?> constructor = field.getType().getDeclaredConstructor();
+                        if (trySetAccessible(constructor)) {
+                            fieldInstance = constructor.newInstance();
+                            field.set(instance, fieldInstance);
+                        } else {
+                            continue;
+                        }
                     }
 
                     ConfigurationSection subSection = config.getConfigurationSection(pathKey);
@@ -132,7 +139,7 @@ public class ConfigMapper {
             String path = getPathKey(field);
 
             try {
-                field.setAccessible(true);
+                if (!trySetAccessible(field)) continue;
                 Object value = field.get(instance);
 
                 if (value == null) continue;
@@ -227,7 +234,7 @@ public class ConfigMapper {
             Map<String, Object> objectMap = new LinkedHashMap<>();
             for (Field objField : obj.getClass().getDeclaredFields()) {
                 if (!shouldProcess(objField)) continue;
-                objField.setAccessible(true);
+                if (!trySetAccessible(objField)) continue;
                 String objPath = getPathKey(objField);
                 objectMap.put(objPath, objField.get(obj));
             }
@@ -317,7 +324,7 @@ public class ConfigMapper {
     private Object createInstance(Class<?> clazz) throws Exception {
         try {
             Constructor<?> constructor = clazz.getDeclaredConstructor();
-            constructor.setAccessible(true);
+            trySetAccessible(constructor);
             return constructor.newInstance();
         } catch (NoSuchMethodException e) {
             if (clazz.getEnclosingClass() != null && !Modifier.isStatic(clazz.getModifiers())) {
@@ -499,8 +506,9 @@ public class ConfigMapper {
     private void setComments(ConfigurationSection config, String path, List<String> comments) {
         try {
             Method method = config.getClass().getMethod("setComments", String.class, List.class);
-            method.setAccessible(true);
-            method.invoke(config, path, comments);
+            if (trySetAccessible(method)) {
+                method.invoke(config, path, comments);
+            }
         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ignored) {}
     }
 
@@ -508,13 +516,29 @@ public class ConfigMapper {
         for (Method method : instance.getClass().getDeclaredMethods()) {
             if (method.isAnnotationPresent(PostLoad.class)) {
                 try {
-                    method.setAccessible(true);
+                    if (!trySetAccessible(method)) continue;
                     method.invoke(instance);
                 } catch (Exception e) {
                     logger.warning("PostLoad metodu çalışırken hata: " + method.getName());
                     logger.severe(e.getMessage());
                 }
             }
+        }
+    }
+
+    /**
+     * AccessibleObject (Field, Method, Constructor) üzerinde setAccessible(true) yapmayı dener.
+     *
+     * @param object Erişilmek istenen Field, Method veya Constructor.
+     * @return Erişim başarılıysa true, SecurityException alınırsa false.
+     */
+    private boolean trySetAccessible(AccessibleObject object) {
+        try {
+            object.setAccessible(true);
+            return true;
+        } catch (Exception e) {
+            logger.severe("Cannot access member " + object.toString() + " due to security restrictions: " + e.getMessage());
+            return false;
         }
     }
 }
