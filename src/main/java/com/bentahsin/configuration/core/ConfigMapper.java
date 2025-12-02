@@ -9,6 +9,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import java.lang.reflect.*;
 import java.util.*;
 import java.util.logging.Logger;
+import java.util.regex.Pattern;
 
 public class ConfigMapper {
 
@@ -16,6 +17,31 @@ public class ConfigMapper {
 
     public ConfigMapper(Logger logger) {
         this.logger = logger;
+    }
+
+    public void resetToDefaults(Object instance) {
+        try {
+            Constructor<?> constructor = instance.getClass().getDeclaredConstructor();
+            if (!trySetAccessible(constructor)) return;
+            Object freshInstance = constructor.newInstance();
+
+            for (Field field : instance.getClass().getDeclaredFields()) {
+                if (!shouldProcess(field)) continue;
+                if (!trySetAccessible(field)) continue;
+
+                Object defaultValue = field.get(freshInstance);
+                field.set(instance, defaultValue);
+            }
+        } catch (NoSuchMethodException e) {
+            if (instance.getClass().getEnclosingClass() != null && !Modifier.isStatic(instance.getClass().getModifiers())) {
+                logger.severe("CRITICAL ERROR: Config class '" + instance.getClass().getSimpleName() + "' is an Inner Class but NOT STATIC.");
+                logger.severe("Please make it static: 'public static class " + instance.getClass().getSimpleName() + "'");
+            } else {
+                logger.severe("Config reset failed. Does '" + instance.getClass().getSimpleName() + "' have a no-args constructor?");
+            }
+        } catch (Exception e) {
+            logger.severe("Error resetting config: " + e.getMessage());
+        }
     }
 
     public void handleVersion(Object instance, ConfigurationSection config) {
@@ -187,9 +213,27 @@ public class ConfigMapper {
         if (!config.contains(path)) return;
 
         Class<?> genericType = getListType(field);
+        List<?> rawList = config.getList(path);
+
+        if (rawList == null) return;
 
         if (genericType == String.class || isPrimitive(genericType)) {
-            field.set(instance, config.getList(path));
+            List<Object> validatedList = new ArrayList<>();
+            Validate validate = field.getAnnotation(Validate.class);
+
+            for (Object obj : rawList) {
+                if (validate != null && !isValid(field.getName() + " (List Element)", obj, validate)) {
+                    continue;
+                }
+
+                Object converted = convertPrimitive(obj, genericType);
+                if (converted != null) {
+                    validatedList.add(converted);
+                } else {
+                    validatedList.add(obj);
+                }
+            }
+            field.set(instance, validatedList);
             return;
         }
 
@@ -198,10 +242,10 @@ public class ConfigMapper {
             return;
         }
 
-        List<Map<?, ?>> rawList = config.getMapList(path);
+        List<Map<?, ?>> rawMapList = config.getMapList(path);
         List<Object> resultList = new ArrayList<>();
 
-        for (Map<?, ?> rawMap : rawList) {
+        for (Map<?, ?> rawMap : rawMapList) {
             Object itemInstance = genericType.getDeclaredConstructor().newInstance();
             MemoryConfiguration tempConfig = new MemoryConfiguration();
 
@@ -225,12 +269,18 @@ public class ConfigMapper {
         Class<?> genericType = getListType(field);
 
         if (genericType == String.class || isPrimitive(genericType) || Map.class.isAssignableFrom(genericType)) {
-            config.set(path, list);
+            List<Object> cleanList = new ArrayList<>();
+            for (Object o : list) {
+                if (o != null) cleanList.add(o);
+            }
+            config.set(path, cleanList);
             return;
         }
 
         List<Map<String, Object>> mapList = new ArrayList<>();
         for (Object obj : list) {
+            if (obj == null) continue;
+
             Map<String, Object> objectMap = new LinkedHashMap<>();
             for (Field objField : obj.getClass().getDeclaredFields()) {
                 if (!shouldProcess(objField)) continue;
@@ -304,12 +354,18 @@ public class ConfigMapper {
         return String.class;
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    @SuppressWarnings({"rawtypes"})
     private Object convertKey(String key, Class<?> targetType) {
         try {
             if (targetType == String.class) return key;
             if (targetType.isEnum()) {
-                return Enum.valueOf((Class<Enum>) targetType, key.toUpperCase(Locale.ENGLISH));
+                for (Object enumConstant : targetType.getEnumConstants()) {
+                    if (((Enum) enumConstant).name().equalsIgnoreCase(key)) {
+                        return enumConstant;
+                    }
+                }
+                logger.warning("Enum key not found: " + key);
+                return null;
             }
             if (targetType == Integer.class || targetType == int.class) return Integer.parseInt(key);
             if (targetType == Long.class || targetType == long.class) return Long.parseLong(key);
@@ -407,6 +463,7 @@ public class ConfigMapper {
     private boolean isPrimitive(Class<?> type) {
         return type.isPrimitive() ||
                 type == String.class ||
+                type == Character.class ||
                 Number.class.isAssignableFrom(type) ||
                 Boolean.class.isAssignableFrom(type);
     }
@@ -419,74 +476,90 @@ public class ConfigMapper {
         field.set(instance, convertedValue);
     }
 
-    private void safeSetField(Object instance, Field field, Object value) throws IllegalAccessException {
-        Class<?> type = field.getType();
-
-        if (field.isAnnotationPresent(Validate.class)) {
-            Validate validate = field.getAnnotation(Validate.class);
-
-            if (value == null) {
-                if (validate.notNull()) {
-                    logger.warning("Config Error: " + field.getName() + " cannot be null!");
-                }
-                return;
+    private boolean isValid(String fieldName, Object value, Validate validate) {
+        if (value == null) {
+            if (validate.notNull()) {
+                logger.warning("Config Error: " + fieldName + " cannot be null!");
+                return false;
             }
-
-            if (value instanceof Number) {
-                double val = ((Number) value).doubleValue();
-                if (val < validate.min() || val > validate.max()) {
-                    logger.warning(String.format("Config Limit Error (%s): %s (Min:%s Max:%s)", field.getName(), val, validate.min(), validate.max()));
-                    return;
-                }
-            }
-
-            if (value instanceof String && !validate.pattern().isEmpty()) {
-                String strVal = (String) value;
-                if (!strVal.matches(validate.pattern())) {
-                    logger.warning("Config Format Error (" + field.getName() + "): Value '" + strVal + "' does not match format.");
-                    logger.warning("Expected Regex: " + validate.pattern());
-                    return;
-                }
-            }
-        }
-
-        if (value == null) return;
-
-        if (type.isEnum()) {
-            if (value instanceof String) {
-                try {
-                    @SuppressWarnings({"unchecked", "rawtypes"})
-                    Enum<?> enumValue = Enum.valueOf((Class<Enum>) type, ((String) value).toUpperCase(Locale.ENGLISH));
-                    field.set(instance, enumValue);
-                } catch (IllegalArgumentException e) {
-                    logger.warning("Enum Error: '" + field.getName() + "' invalid: " + value);
-                }
-            }
-            return;
+            return true;
         }
 
         if (value instanceof Number) {
-            Number num = (Number) value;
-            if (type == int.class || type == Integer.class) field.set(instance, num.intValue());
-            else if (type == long.class || type == Long.class) field.set(instance, num.longValue());
-            else if (type == double.class || type == Double.class) field.set(instance, num.doubleValue());
-            else if (type == float.class || type == Float.class) field.set(instance, num.floatValue());
-            else if (type == short.class || type == Short.class) field.set(instance, num.shortValue());
-            else if (type == byte.class || type == Byte.class) field.set(instance, num.byteValue());
-            else if (type == String.class) field.set(instance, num.toString());
+            double val = ((Number) value).doubleValue();
+            if (val < validate.min() || val > validate.max()) {
+                logger.warning(String.format("Config Limit Error (%s): %s (Min:%s Max:%s)", fieldName, val, validate.min(), validate.max()));
+                return false;
+            }
+        }
+
+        if (value instanceof String && !validate.pattern().isEmpty()) {
+            String strVal = (String) value;
+            try {
+                if (!Pattern.matches(validate.pattern(), strVal)) {
+                    logger.warning("Config Format Error (" + fieldName + "): Value '" + strVal + "' does not match regex: " + validate.pattern());
+                    return false;
+                }
+            } catch (Exception e) {
+                logger.warning("Invalid Regex pattern in code for field: " + fieldName);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void safeSetField(Object instance, Field field, Object value) throws IllegalAccessException {
+        if (field.isAnnotationPresent(Validate.class)) {
+            if (!isValid(field.getName(), value, field.getAnnotation(Validate.class))) {
+                return;
+            }
+        }
+        if (value == null) return;
+        Class<?> type = field.getType();
+
+        if (type.isEnum() && value instanceof String) {
+            boolean found = false;
+            for (Object enumConstant : type.getEnumConstants()) {
+                if (((Enum<?>) enumConstant).name().equalsIgnoreCase((String) value)) {
+                    field.set(instance, enumConstant);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                logger.warning("Enum Error: '" + field.getName() + "' invalid value: " + value);
+            }
             return;
         }
 
-        if (type == String.class && !(value instanceof String)) {
-            field.set(instance, value.toString());
-            return;
-        }
-
-        if (type.isAssignableFrom(value.getClass())) {
+        Object converted = convertPrimitive(value, type);
+        if (converted != null) {
+            field.set(instance, converted);
+        } else if (type.isAssignableFrom(value.getClass())) {
             field.set(instance, value);
         } else {
             logger.warning("Type Mismatch: '" + field.getName() + "' Expected: " + type.getSimpleName() + ", Got: " + value.getClass().getSimpleName());
         }
+    }
+
+    private Object convertPrimitive(Object value, Class<?> targetType) {
+        if (value instanceof Number) {
+            Number num = (Number) value;
+            if (targetType == int.class || targetType == Integer.class) return num.intValue();
+            if (targetType == long.class || targetType == Long.class) return num.longValue();
+            if (targetType == double.class || targetType == Double.class) return num.doubleValue();
+            if (targetType == float.class || targetType == Float.class) return num.floatValue();
+            if (targetType == short.class || targetType == Short.class) return num.shortValue();
+            if (targetType == byte.class || targetType == Byte.class) return num.byteValue();
+            if (targetType == String.class) return num.toString();
+        }
+        if (targetType == String.class) return value.toString();
+        if ((targetType == char.class || targetType == Character.class) && value instanceof String) {
+            String s = (String) value;
+            if (!s.isEmpty()) return s.charAt(0);
+            logger.warning("Character Conversion Warning: Empty string provided for Character field; returning null.");
+        }
+        return null;
     }
 
     private boolean shouldProcess(Field field) {

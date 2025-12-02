@@ -10,38 +10,27 @@ import java.util.Locale;
 @SuppressWarnings("unused")
 public class LocationConverter implements Converter<String, Location> {
 
-    /**
-     * Config'den gelen String veriyi (örn: "world,100,64,200,90,0") Location nesnesine çevirir.
-     */
     @Override
     public Location convertToField(String source) {
-        if (source == null || !source.contains(",")) {
-            return null;
-        }
+        if (source == null || !source.contains(",")) return null;
 
         try {
             String[] parts = source.split(",");
-
-            if (parts.length < 4) {
-                return null;
-            }
+            if (parts.length < 4) return null;
 
             String worldName = parts[0];
             World world = Bukkit.getWorld(worldName);
 
+            if (world == null) {
+                Bukkit.getLogger().warning("[Configuration] World '" + worldName + "' not found for location!");
+                return null;
+            }
+
             double x = Double.parseDouble(parts[1]);
             double y = Double.parseDouble(parts[2]);
             double z = Double.parseDouble(parts[3]);
-
-            float yaw = 0;
-            float pitch = 0;
-
-            if (parts.length > 4) {
-                yaw = Float.parseFloat(parts[4]);
-            }
-            if (parts.length > 5) {
-                pitch = Float.parseFloat(parts[5]);
-            }
+            float yaw = parts.length > 4 ? Float.parseFloat(parts[4]) : 0;
+            float pitch = parts.length > 5 ? Float.parseFloat(parts[5]) : 0;
 
             return new Location(world, x, y, z, yaw, pitch);
 
@@ -50,15 +39,11 @@ public class LocationConverter implements Converter<String, Location> {
         }
     }
 
-    /**
-     * Location nesnesini Config için sıkıştırılmış String formatına çevirir.
-     */
     @Override
     public String convertToConfig(Location loc) {
-        if (loc == null) return null;
+        if (loc == null || loc.getWorld() == null) return null;
 
-        String worldName = (loc.getWorld() != null) ? loc.getWorld().getName() : "world";
-        return worldName + "," +
+        return loc.getWorld().getName() + "," +
                 format(loc.getX()) + "," +
                 format(loc.getY()) + "," +
                 format(loc.getZ()) + "," +
@@ -66,14 +51,8 @@ public class LocationConverter implements Converter<String, Location> {
                 format(loc.getPitch());
     }
 
-    /**
-     * Sayıları temiz formatlar.
-     * Örn: 10.0 -> "10", 10.5678 -> "10.57"
-     */
     private String format(double d) {
-        if (d == (long) d) {
-            return String.format(Locale.ENGLISH, "%d", (long) d);
-        }
+        if (d == (long) d) return String.format(Locale.ENGLISH, "%d", (long) d);
         return String.format(Locale.ENGLISH, "%.2f", d);
     }
 }

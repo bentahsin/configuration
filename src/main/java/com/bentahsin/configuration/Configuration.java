@@ -55,6 +55,10 @@ public class Configuration {
         }
 
         if (!loadFailed) {
+            mapper.resetToDefaults(configInstance);
+        }
+
+        if (!loadFailed) {
             handleBackupOnMigration(configInstance, yamlConfig, file);
         }
 
