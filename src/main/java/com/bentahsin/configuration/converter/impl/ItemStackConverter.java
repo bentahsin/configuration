@@ -37,12 +37,10 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
             ItemMeta meta = item.getItemMeta();
 
             if (meta != null) {
-                // --- Name ---
                 if (source.containsKey("name")) {
                     meta.setDisplayName(color(String.valueOf(source.get("name"))));
                 }
 
-                // --- Lore (Güvenli Liste Dönüşümü) ---
                 if (source.get("lore") instanceof List) {
                     List<?> rawList = (List<?>) source.get("lore");
                     List<String> lore = new ArrayList<>();
@@ -54,17 +52,14 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                     meta.setLore(lore);
                 }
 
-                // --- Custom Model Data ---
                 if (source.get("custom_model_data") instanceof Number) {
                     setCustomModelData(meta, ((Number) source.get("custom_model_data")).intValue());
                 }
 
-                // --- Unbreakable ---
                 if (source.containsKey("unbreakable") && source.get("unbreakable") instanceof Boolean) {
                     meta.setUnbreakable((boolean) source.get("unbreakable"));
                 }
 
-                // --- Flags (Güvenli Liste Dönüşümü) ---
                 if (source.get("flags") instanceof List) {
                     List<?> flags = (List<?>) source.get("flags");
                     for (Object obj : flags) {
@@ -76,7 +71,6 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                     }
                 }
 
-                // --- Enchantments (Güvenli Map Dönüşümü) ---
                 if (source.get("enchantments") instanceof Map) {
                     Map<?, ?> enchs = (Map<?, ?>) source.get("enchantments");
                     for (Map.Entry<?, ?> entry : enchs.entrySet()) {
@@ -89,9 +83,6 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                     }
                 }
 
-                // --- ÖZEL META TİPLERİ ---
-
-                // 1. Deri Zırh Boyası
                 if (meta instanceof LeatherArmorMeta && source.containsKey("color")) {
                     String hex = String.valueOf(source.get("color"));
                     if (hex.startsWith("#") && hex.length() == 7) {
@@ -105,12 +96,10 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                     }
                 }
 
-                // 2. Oyuncu Kafası (Skull)
                 if (meta instanceof SkullMeta && source.containsKey("skull_owner")) {
                     ((SkullMeta) meta).setOwner(String.valueOf(source.get("skull_owner")));
                 }
 
-                // 3. İksirler (Potion)
                 if (meta instanceof PotionMeta && source.containsKey("potion_type")) {
                     try {
                         PotionType type = PotionType.valueOf(String.valueOf(source.get("potion_type")).toUpperCase());
@@ -170,12 +159,14 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                 map.put("enchantments", enchs);
             }
 
-            // --- ÖZEL META KAYITLARI ---
-
             if (meta instanceof LeatherArmorMeta) {
                 Color color = ((LeatherArmorMeta) meta).getColor();
-                String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
-                map.put("color", hex);
+                Color defaultColor = Bukkit.getItemFactory().getDefaultLeatherColor();
+
+                if (!color.equals(defaultColor)) {
+                    String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
+                    map.put("color", hex);
+                }
             }
 
             if (meta instanceof SkullMeta) {

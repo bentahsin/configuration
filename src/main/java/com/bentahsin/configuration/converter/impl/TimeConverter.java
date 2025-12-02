@@ -62,6 +62,6 @@ public class TimeConverter implements Converter<String, Long> {
             } catch (NumberFormatException ignored) {}
         }
 
-        return (long) totalSeconds;
+        return Math.round(totalSeconds);
     }
 }

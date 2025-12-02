@@ -502,6 +502,7 @@ public class ConfigMapper {
                 }
             } catch (Exception e) {
                 logger.warning("Invalid Regex pattern in code for field: " + fieldName);
+                return false;
             }
         }
         return true;
@@ -556,6 +557,7 @@ public class ConfigMapper {
         if ((targetType == char.class || targetType == Character.class) && value instanceof String) {
             String s = (String) value;
             if (!s.isEmpty()) return s.charAt(0);
+            logger.warning("Character Conversion Warning: Empty string provided for Character field; returning null.");
         }
         return null;
     }
