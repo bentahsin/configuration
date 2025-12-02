@@ -10,16 +10,41 @@ import org.bukkit.enchantments.Enchantment;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.*;
-import org.bukkit.potion.PotionData;
-import org.bukkit.potion.PotionType;
 
 import java.lang.reflect.Method;
 import java.util.*;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @SuppressWarnings({"unused", "deprecation"})
 public class ItemStackConverter implements Converter<Map<String, Object>, ItemStack> {
+
+    private static final boolean SUPPORTS_POTION_DATA;
+    private static final boolean SUPPORTS_HEX;
+    private static final Pattern HEX_PATTERN = Pattern.compile("&#([A-Fa-f0-9]{6})");
+
+    private static Method CHAT_COLOR_OF_METHOD;
+
+    static {
+        boolean potionSupport = false;
+        try {
+            Class.forName("org.bukkit.potion.PotionData");
+            potionSupport = true;
+        } catch (ClassNotFoundException ignored) {}
+        SUPPORTS_POTION_DATA = potionSupport;
+
+        boolean hexSupport = false;
+        try {
+            Class<?> chatColorClass = Class.forName("net.md_5.bungee.api.ChatColor");
+            CHAT_COLOR_OF_METHOD = chatColorClass.getMethod("of", String.class);
+            hexSupport = true;
+        } catch (Exception ignored) {
+            CHAT_COLOR_OF_METHOD = null;
+        }
+        SUPPORTS_HEX = hexSupport;
+    }
 
     @Override
     public ItemStack convertToField(Map<String, Object> source) {
@@ -45,9 +70,7 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                     List<?> rawList = (List<?>) source.get("lore");
                     List<String> lore = new ArrayList<>();
                     for (Object obj : rawList) {
-                        if (obj != null) {
-                            lore.add(color(obj.toString()));
-                        }
+                        if (obj != null) lore.add(color(obj.toString()));
                     }
                     meta.setLore(lore);
                 }
@@ -57,7 +80,7 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                 }
 
                 if (source.containsKey("unbreakable") && source.get("unbreakable") instanceof Boolean) {
-                    meta.setUnbreakable((boolean) source.get("unbreakable"));
+                    setUnbreakable(meta, (boolean) source.get("unbreakable"));
                 }
 
                 if (source.get("flags") instanceof List) {
@@ -100,13 +123,8 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                     ((SkullMeta) meta).setOwner(String.valueOf(source.get("skull_owner")));
                 }
 
-                if (meta instanceof PotionMeta && source.containsKey("potion_type")) {
-                    try {
-                        PotionType type = PotionType.valueOf(String.valueOf(source.get("potion_type")).toUpperCase());
-                        boolean extended = (boolean) source.getOrDefault("potion_extended", false);
-                        boolean upgraded = (boolean) source.getOrDefault("potion_upgraded", false);
-                        ((PotionMeta) meta).setBasePotionData(new PotionData(type, extended, upgraded));
-                    } catch (Exception ignored) {}
+                if (SUPPORTS_POTION_DATA && meta instanceof PotionMeta && source.containsKey("potion_type")) {
+                    applyPotionData((PotionMeta) meta, source);
                 }
 
                 item.setItemMeta(meta);
@@ -143,7 +161,7 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
             Integer cmd = getCustomModelData(meta);
             if (cmd != null) map.put("custom_model_data", cmd);
 
-            if (meta.isUnbreakable()) map.put("unbreakable", true);
+            if (isUnbreakable(meta)) map.put("unbreakable", true);
 
             if (!meta.getItemFlags().isEmpty()) {
                 List<String> flags = new ArrayList<>();
@@ -161,9 +179,13 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
 
             if (meta instanceof LeatherArmorMeta) {
                 Color color = ((LeatherArmorMeta) meta).getColor();
-                Color defaultColor = Bukkit.getItemFactory().getDefaultLeatherColor();
-
-                if (!color.equals(defaultColor)) {
+                try {
+                    Color defaultColor = Bukkit.getItemFactory().getDefaultLeatherColor();
+                    if (!color.equals(defaultColor)) {
+                        String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
+                        map.put("color", hex);
+                    }
+                } catch (Throwable t) {
                     String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
                     map.put("color", hex);
                 }
@@ -176,17 +198,63 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                 }
             }
 
-            if (meta instanceof PotionMeta) {
-                PotionData data = ((PotionMeta) meta).getBasePotionData();
-                map.put("potion_type", data.getType().name());
-                if (data.isExtended()) map.put("potion_extended", true);
-                if (data.isUpgraded()) map.put("potion_upgraded", true);
+            if (SUPPORTS_POTION_DATA && meta instanceof PotionMeta) {
+                savePotionData((PotionMeta) meta, map);
             }
         }
         return map;
     }
 
+    private void applyPotionData(PotionMeta meta, Map<String, Object> source) {
+        try {
+            org.bukkit.potion.PotionType type = org.bukkit.potion.PotionType.valueOf(String.valueOf(source.get("potion_type")).toUpperCase());
+            boolean extended = (boolean) source.getOrDefault("potion_extended", false);
+            boolean upgraded = (boolean) source.getOrDefault("potion_upgraded", false);
+            meta.setBasePotionData(new org.bukkit.potion.PotionData(type, extended, upgraded));
+        } catch (Exception ignored) {}
+    }
+
+    private void savePotionData(PotionMeta meta, Map<String, Object> map) {
+        try {
+            org.bukkit.potion.PotionData data = meta.getBasePotionData();
+            map.put("potion_type", data.getType().name());
+            if (data.isExtended()) map.put("potion_extended", true);
+            if (data.isUpgraded()) map.put("potion_upgraded", true);
+        } catch (Exception ignored) {}
+    }
+
+    private void setUnbreakable(ItemMeta meta, boolean unbreakable) {
+        try {
+            meta.setUnbreakable(unbreakable);
+        } catch (NoSuchMethodError ignored) { }
+    }
+
+    private boolean isUnbreakable(ItemMeta meta) {
+        try {
+            return meta.isUnbreakable();
+        } catch (NoSuchMethodError e) {
+            return false;
+        }
+    }
+
     private String color(String s) {
+        if (s == null) return "";
+
+        if (SUPPORTS_HEX && CHAT_COLOR_OF_METHOD != null) {
+            Matcher matcher = HEX_PATTERN.matcher(s);
+            StringBuffer buffer = new StringBuffer();
+            while (matcher.find()) {
+                try {
+                    Object colorObj = CHAT_COLOR_OF_METHOD.invoke(null, "#" + matcher.group(1));
+                    matcher.appendReplacement(buffer, colorObj.toString());
+                } catch (Exception e) {
+                    return s;
+                }
+            }
+            matcher.appendTail(buffer);
+            s = buffer.toString();
+        }
+
         return ChatColor.translateAlternateColorCodes('&', s);
     }
 
