@@ -3,12 +3,15 @@ package com.bentahsin.configuration.converter.impl;
 import com.bentahsin.configuration.converter.Converter;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Color;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.*;
+import org.bukkit.potion.PotionData;
+import org.bukkit.potion.PotionType;
 
 import java.lang.reflect.Method;
 import java.util.*;
@@ -25,55 +28,96 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
             Material material = Material.getMaterial(matStr.toUpperCase());
             if (material == null) material = Material.STONE;
 
-            int amount = (int) source.getOrDefault("amount", 1);
+            int amount = 1;
+            if (source.get("amount") instanceof Number) {
+                amount = ((Number) source.get("amount")).intValue();
+            }
+
             ItemStack item = new ItemStack(material, amount);
             ItemMeta meta = item.getItemMeta();
 
             if (meta != null) {
+                // --- Name ---
                 if (source.containsKey("name")) {
-                    meta.setDisplayName(color((String) source.get("name")));
+                    meta.setDisplayName(color(String.valueOf(source.get("name"))));
                 }
 
-                if (source.containsKey("lore")) {
-                    Object loreObj = source.get("lore");
-                    if (loreObj instanceof List) {
-                        @SuppressWarnings("unchecked")
-                        List<String> rawLore = (List<String>) loreObj;
-                        meta.setLore(rawLore.stream().map(this::color).collect(Collectors.toList()));
+                // --- Lore (Güvenli Liste Dönüşümü) ---
+                if (source.get("lore") instanceof List) {
+                    List<?> rawList = (List<?>) source.get("lore");
+                    List<String> lore = new ArrayList<>();
+                    for (Object obj : rawList) {
+                        if (obj != null) {
+                            lore.add(color(obj.toString()));
+                        }
                     }
+                    meta.setLore(lore);
                 }
 
-                if (source.containsKey("custom_model_data") && source.get("custom_model_data") instanceof Integer) {
-                    int data = (int) source.get("custom_model_data");
-                    setCustomModelData(meta, data);
+                // --- Custom Model Data ---
+                if (source.get("custom_model_data") instanceof Number) {
+                    setCustomModelData(meta, ((Number) source.get("custom_model_data")).intValue());
                 }
 
-                if (source.containsKey("flags")) {
-                    Object flagsObj = source.get("flags");
-                    if (flagsObj instanceof List) {
-                        @SuppressWarnings("unchecked")
-                        List<String> flags = (List<String>) flagsObj;
-                        for (String f : flags) {
+                // --- Unbreakable ---
+                if (source.containsKey("unbreakable") && source.get("unbreakable") instanceof Boolean) {
+                    meta.setUnbreakable((boolean) source.get("unbreakable"));
+                }
+
+                // --- Flags (Güvenli Liste Dönüşümü) ---
+                if (source.get("flags") instanceof List) {
+                    List<?> flags = (List<?>) source.get("flags");
+                    for (Object obj : flags) {
+                        if (obj instanceof String) {
                             try {
-                                meta.addItemFlags(ItemFlag.valueOf(f.toUpperCase()));
+                                meta.addItemFlags(ItemFlag.valueOf(((String) obj).toUpperCase()));
                             } catch (IllegalArgumentException ignored) {}
                         }
                     }
                 }
 
-                if (source.containsKey("enchantments")) {
-                    Object enchsObj = source.get("enchantments");
-                    if (enchsObj instanceof Map) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> enchs = (Map<String, Object>) enchsObj;
-
-                        for (Map.Entry<String, Object> entry : enchs.entrySet()) {
-                            Enchantment ench = getEnchantment(entry.getKey());
-                            if (ench != null && entry.getValue() instanceof Integer) {
-                                meta.addEnchant(ench, (int) entry.getValue(), true);
+                // --- Enchantments (Güvenli Map Dönüşümü) ---
+                if (source.get("enchantments") instanceof Map) {
+                    Map<?, ?> enchs = (Map<?, ?>) source.get("enchantments");
+                    for (Map.Entry<?, ?> entry : enchs.entrySet()) {
+                        if (entry.getKey() instanceof String && entry.getValue() instanceof Number) {
+                            Enchantment ench = getEnchantment((String) entry.getKey());
+                            if (ench != null) {
+                                meta.addEnchant(ench, ((Number) entry.getValue()).intValue(), true);
                             }
                         }
                     }
+                }
+
+                // --- ÖZEL META TİPLERİ ---
+
+                // 1. Deri Zırh Boyası
+                if (meta instanceof LeatherArmorMeta && source.containsKey("color")) {
+                    String hex = String.valueOf(source.get("color"));
+                    if (hex.startsWith("#") && hex.length() == 7) {
+                        try {
+                            ((LeatherArmorMeta) meta).setColor(Color.fromRGB(
+                                    Integer.valueOf(hex.substring(1, 3), 16),
+                                    Integer.valueOf(hex.substring(3, 5), 16),
+                                    Integer.valueOf(hex.substring(5, 7), 16)
+                            ));
+                        } catch (Exception ignored) {}
+                    }
+                }
+
+                // 2. Oyuncu Kafası (Skull)
+                if (meta instanceof SkullMeta && source.containsKey("skull_owner")) {
+                    ((SkullMeta) meta).setOwner(String.valueOf(source.get("skull_owner")));
+                }
+
+                // 3. İksirler (Potion)
+                if (meta instanceof PotionMeta && source.containsKey("potion_type")) {
+                    try {
+                        PotionType type = PotionType.valueOf(String.valueOf(source.get("potion_type")).toUpperCase());
+                        boolean extended = (boolean) source.getOrDefault("potion_extended", false);
+                        boolean upgraded = (boolean) source.getOrDefault("potion_upgraded", false);
+                        ((PotionMeta) meta).setBasePotionData(new PotionData(type, extended, upgraded));
+                    } catch (Exception ignored) {}
                 }
 
                 item.setItemMeta(meta);
@@ -81,7 +125,7 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
             return item;
 
         } catch (Exception e) {
-            Bukkit.getLogger().log(Level.WARNING, "[Configuration] Encountered an error while transforming ItemStack!", e);
+            Bukkit.getLogger().log(Level.WARNING, "[Configuration] Error loading ItemStack!", e);
             return new ItemStack(Material.AIR);
         }
     }
@@ -107,10 +151,10 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                         .collect(Collectors.toList()));
             }
 
-            Integer customModelData = getCustomModelData(meta);
-            if (customModelData != null) {
-                map.put("custom_model_data", customModelData);
-            }
+            Integer cmd = getCustomModelData(meta);
+            if (cmd != null) map.put("custom_model_data", cmd);
+
+            if (meta.isUnbreakable()) map.put("unbreakable", true);
 
             if (!meta.getItemFlags().isEmpty()) {
                 List<String> flags = new ArrayList<>();
@@ -121,10 +165,31 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
             if (meta.hasEnchants()) {
                 Map<String, Integer> enchs = new LinkedHashMap<>();
                 for (Map.Entry<Enchantment, Integer> entry : meta.getEnchants().entrySet()) {
-                    String enchName = getEnchantmentName(entry.getKey());
-                    enchs.put(enchName, entry.getValue());
+                    enchs.put(getEnchantmentName(entry.getKey()), entry.getValue());
                 }
                 map.put("enchantments", enchs);
+            }
+
+            // --- ÖZEL META KAYITLARI ---
+
+            if (meta instanceof LeatherArmorMeta) {
+                Color color = ((LeatherArmorMeta) meta).getColor();
+                String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
+                map.put("color", hex);
+            }
+
+            if (meta instanceof SkullMeta) {
+                SkullMeta skull = (SkullMeta) meta;
+                if (skull.hasOwner()) {
+                    map.put("skull_owner", skull.getOwner());
+                }
+            }
+
+            if (meta instanceof PotionMeta) {
+                PotionData data = ((PotionMeta) meta).getBasePotionData();
+                map.put("potion_type", data.getType().name());
+                if (data.isExtended()) map.put("potion_extended", true);
+                if (data.isUpgraded()) map.put("potion_upgraded", true);
             }
         }
         return map;
@@ -133,7 +198,6 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
     private String color(String s) {
         return ChatColor.translateAlternateColorCodes('&', s);
     }
-
 
     private void setCustomModelData(ItemMeta meta, int data) {
         try {
