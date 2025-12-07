@@ -543,6 +543,9 @@ public class ConfigMapper {
     }
 
     private Object convertPrimitive(Object value, Class<?> targetType) {
+        if (value instanceof Boolean && (targetType == boolean.class || targetType == Boolean.class)) {
+            return value;
+        }
         if (value instanceof Number) {
             Number num = (Number) value;
             if (targetType == int.class || targetType == Integer.class) return num.intValue();
