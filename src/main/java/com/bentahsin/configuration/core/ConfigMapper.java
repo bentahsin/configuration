@@ -217,6 +217,11 @@ public class ConfigMapper {
 
         if (rawList == null) return;
 
+        if (Map.class.isAssignableFrom(genericType)) {
+            field.set(instance, config.getMapList(path));
+            return;
+        }
+
         if (genericType == String.class || isPrimitive(genericType)) {
             List<Object> validatedList = new ArrayList<>();
             Validate validate = field.getAnnotation(Validate.class);
@@ -234,11 +239,6 @@ public class ConfigMapper {
                 }
             }
             field.set(instance, validatedList);
-            return;
-        }
-
-        if (Map.class.isAssignableFrom(genericType)) {
-            field.set(instance, config.getMapList(path));
             return;
         }
 
@@ -349,6 +349,7 @@ public class ConfigMapper {
             if (args.length > 0) {
                 Type keyType = args[0];
                 if (keyType instanceof Class) return (Class<?>) keyType;
+                if (keyType instanceof ParameterizedType) return (Class<?>) ((ParameterizedType) keyType).getRawType();
             }
         }
         return String.class;
@@ -430,6 +431,9 @@ public class ConfigMapper {
                 if (valueType instanceof Class) {
                     return (Class<?>) valueType;
                 }
+                if (valueType instanceof ParameterizedType) {
+                    return (Class<?>) ((ParameterizedType) valueType).getRawType();
+                }
             }
         }
         return Object.class;
@@ -444,6 +448,9 @@ public class ConfigMapper {
                 Type valueType = args[0];
                 if (valueType instanceof Class) {
                     return (Class<?>) valueType;
+                }
+                if (valueType instanceof ParameterizedType) {
+                    return (Class<?>) ((ParameterizedType) valueType).getRawType();
                 }
             }
         }
@@ -602,12 +609,6 @@ public class ConfigMapper {
         }
     }
 
-    /**
-     * AccessibleObject (Field, Method, Constructor) üzerinde setAccessible(true) yapmayı dener.
-     *
-     * @param object Erişilmek istenen Field, Method veya Constructor.
-     * @return Erişim başarılıysa true, SecurityException alınırsa false.
-     */
     private boolean trySetAccessible(AccessibleObject object) {
         try {
             object.setAccessible(true);
