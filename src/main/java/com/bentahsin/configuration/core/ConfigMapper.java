@@ -91,15 +91,25 @@ public class ConfigMapper {
             if (!shouldProcess(field)) continue;
 
             String pathKey = getPathKey(field);
-
             try {
                 if (!trySetAccessible(field)) continue;
 
-                if (field.isAnnotationPresent(Transform.class)) {
-                    Object val = config.get(pathKey);
-                    if (val != null) {
-                        applyConverter(instance, field, val);
+                Object value = config.get(pathKey);
+
+                if (value == null && field.isAnnotationPresent(LegacyPath.class)) {
+                    String legacyKey = field.getAnnotation(LegacyPath.class).value();
+
+                    if (config.contains(legacyKey)) {
+                        value = config.get(legacyKey);
+                        logger.info("Migrating legacy config path: " + legacyKey + " -> " + pathKey);
+                        config.set(legacyKey, null);
                     }
+                }
+
+                if (value == null) continue;
+
+                if (field.isAnnotationPresent(Transform.class)) {
+                    applyConverter(instance, field, value);
                     continue;
                 }
 
@@ -126,8 +136,8 @@ public class ConfigMapper {
                     }
 
                     ConfigurationSection subSection = config.getConfigurationSection(pathKey);
-                    if (subSection == null && config.contains(pathKey)) {
-                        subSection = config.createSection(pathKey);
+                    if (subSection == null && value instanceof ConfigurationSection) {
+                        subSection = (ConfigurationSection) value;
                     }
 
                     if (subSection != null) {
@@ -136,10 +146,7 @@ public class ConfigMapper {
                     continue;
                 }
 
-                if (config.contains(pathKey)) {
-                    Object value = config.get(pathKey);
-                    safeSetField(instance, field, value);
-                }
+                safeSetField(instance, field, value);
 
             } catch (Exception e) {
                 logger.warning("Error loading config (" + field.getName() + "): " + e.getMessage());
