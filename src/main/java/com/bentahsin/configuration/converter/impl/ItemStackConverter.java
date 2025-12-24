@@ -46,6 +46,17 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
         SUPPORTS_HEX = hexSupport;
     }
 
+    private static final boolean SUPPORTS_POTION_CONTENTS;
+
+    static {
+        boolean contentsSupport = false;
+        try {
+            Class.forName("org.bukkit.inventory.meta.PotionMeta$PotionContents");
+            contentsSupport = true;
+        } catch (ClassNotFoundException ignored) {}
+        SUPPORTS_POTION_CONTENTS = contentsSupport;
+    }
+
     @Override
     public ItemStack convertToField(Map<String, Object> source) {
         try {
@@ -107,16 +118,21 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                 }
 
                 if (meta instanceof LeatherArmorMeta && source.containsKey("color")) {
-                    String hex = String.valueOf(source.get("color"));
-                    if (hex.startsWith("#") && hex.length() == 7) {
+                    Color color = getColorFromHex(String.valueOf(source.get("color")));
+                    if (color != null) ((LeatherArmorMeta) meta).setColor(color);
+                }
+
+                if (meta instanceof PotionMeta && source.containsKey("color")) {
+                    Color color = getColorFromHex(String.valueOf(source.get("color")));
+                    if (color != null) {
                         try {
-                            ((LeatherArmorMeta) meta).setColor(Color.fromRGB(
-                                    Integer.valueOf(hex.substring(1, 3), 16),
-                                    Integer.valueOf(hex.substring(3, 5), 16),
-                                    Integer.valueOf(hex.substring(5, 7), 16)
-                            ));
-                        } catch (Exception ignored) {}
+                            ((PotionMeta) meta).setColor(color);
+                        } catch (NoSuchMethodError | Exception ignored) {}
                     }
+                }
+
+                if (meta instanceof PotionMeta && source.get("custom_effects") instanceof List) {
+                    applyPotionEffects((PotionMeta) meta, (List<?>) source.get("custom_effects"));
                 }
 
                 if (meta instanceof SkullMeta && source.containsKey("skull_owner")) {
@@ -191,6 +207,24 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
                 }
             }
 
+            if (meta instanceof PotionMeta) {
+                PotionMeta potionMeta = (PotionMeta) meta;
+                try {
+                    if (potionMeta.hasColor()) {
+                        Color color = potionMeta.getColor();
+                        if (color != null) {
+                            String hex = String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
+                            map.put("color", hex);
+                        }
+                    }
+                } catch (NoSuchMethodError | Exception ignored) {}
+            }
+
+            if (meta instanceof PotionMeta) {
+                List<String> effects = savePotionEffects((PotionMeta) meta);
+                if (!effects.isEmpty()) map.put("custom_effects", effects);
+            }
+
             if (meta instanceof SkullMeta) {
                 SkullMeta skull = (SkullMeta) meta;
                 if (skull.hasOwner()) {
@@ -205,21 +239,90 @@ public class ItemStackConverter implements Converter<Map<String, Object>, ItemSt
         return map;
     }
 
+    private Color getColorFromHex(String hex) {
+        if (hex == null || !hex.startsWith("#") || hex.length() != 7) return null;
+        try {
+            return Color.fromRGB(
+                    Integer.valueOf(hex.substring(1, 3), 16),
+                    Integer.valueOf(hex.substring(3, 5), 16),
+                    Integer.valueOf(hex.substring(5, 7), 16)
+            );
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private void applyPotionData(PotionMeta meta, Map<String, Object> source) {
         try {
-            org.bukkit.potion.PotionType type = org.bukkit.potion.PotionType.valueOf(String.valueOf(source.get("potion_type")).toUpperCase());
-            boolean extended = (boolean) source.getOrDefault("potion_extended", false);
-            boolean upgraded = (boolean) source.getOrDefault("potion_upgraded", false);
-            meta.setBasePotionData(new org.bukkit.potion.PotionData(type, extended, upgraded));
-        } catch (Exception ignored) {}
+            if (!source.containsKey("potion_type")) return;
+            String typeStr = String.valueOf(source.get("potion_type")).toUpperCase();
+
+            if (SUPPORTS_POTION_CONTENTS) {
+                try {
+                    Method setBaseType = meta.getClass().getMethod("setBasePotionType",
+                            Class.forName("org.bukkit.potion.PotionType"));
+                    Object potionType = Enum.valueOf((Class<Enum>) Class.forName("org.bukkit.potion.PotionType"), typeStr);
+                    setBaseType.invoke(meta, potionType);
+                } catch (Exception e) {
+                    Bukkit.getLogger().warning("[Config] Modern PotionType bulunamadı: " + typeStr);
+                }
+            } else if (SUPPORTS_POTION_DATA) {
+                try {
+                    org.bukkit.potion.PotionType type = org.bukkit.potion.PotionType.valueOf(typeStr);
+                    boolean extended = (boolean) source.getOrDefault("potion_extended", false);
+                    boolean upgraded = (boolean) source.getOrDefault("potion_upgraded", false);
+                    meta.setBasePotionData(new org.bukkit.potion.PotionData(type, extended, upgraded));
+                } catch (IllegalArgumentException e) {
+                    Bukkit.getLogger().warning("[Config] Legacy PotionType bulunamadı: " + typeStr);
+                }
+            }
+
+            if (source.get("custom_effects") instanceof List) {
+                applyPotionEffects(meta, (List<?>) source.get("custom_effects"));
+            }
+
+        } catch (Exception e) {
+            Bukkit.getLogger().log(Level.SEVERE, "[Config] applyPotionData işlenirken hata oluştu!", e);
+        }
+    }
+
+    private void applyPotionEffects(PotionMeta meta, List<?> rawEffects) {
+        for (Object obj : rawEffects) {
+            if (obj instanceof String) {
+                String[] split = ((String) obj).split(":");
+                try {
+                    org.bukkit.potion.PotionEffectType type = org.bukkit.potion.PotionEffectType.getByName(split[0].toUpperCase());
+                    if (type == null) continue;
+                    int duration = split.length > 1 ? Integer.parseInt(split[1]) : 600;
+                    int amplifier = split.length > 2 ? Integer.parseInt(split[2]) : 0;
+                    meta.addCustomEffect(new org.bukkit.potion.PotionEffect(type, duration, amplifier), true);
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private List<String> savePotionEffects(PotionMeta meta) {
+        List<String> list = new ArrayList<>();
+        for (org.bukkit.potion.PotionEffect effect : meta.getCustomEffects()) {
+            list.add(effect.getType().getName() + ":" + effect.getDuration() + ":" + effect.getAmplifier());
+        }
+        return list;
     }
 
     private void savePotionData(PotionMeta meta, Map<String, Object> map) {
         try {
-            org.bukkit.potion.PotionData data = meta.getBasePotionData();
-            map.put("potion_type", data.getType().name());
-            if (data.isExtended()) map.put("potion_extended", true);
-            if (data.isUpgraded()) map.put("potion_upgraded", true);
+            if (SUPPORTS_POTION_CONTENTS) {
+                Method getBaseType = meta.getClass().getMethod("getBasePotionType");
+                Object type = getBaseType.invoke(meta);
+                if (type != null) {
+                    map.put("potion_type", type.toString());
+                }
+            } else {
+                org.bukkit.potion.PotionData data = meta.getBasePotionData();
+                map.put("potion_type", data.getType().name());
+                if (data.isExtended()) map.put("potion_extended", true);
+                if (data.isUpgraded()) map.put("potion_upgraded", true);
+            }
         } catch (Exception ignored) {}
     }
 
